@@ -17,6 +17,12 @@ function GoTop() {
   )
 }
 
+function Github() {
+  return (
+    <button type="button" title="Github" className="i-ph:github-logo-duotone btn" onClick={() => window.open(Homepage)} />
+  )
+}
+
 function Refresh() {
   const currentSources = useAtomValue(currentSourcesAtom)
   const { refresh } = useRefetch()
@@ -24,7 +30,8 @@ function Refresh() {
 
   const isFetching = useIsFetching({
     predicate: (query) => {
-      return currentSources.includes(query.queryKey[0] as SourceID)
+      const [type, id] = query.queryKey as ["source" | "entire", SourceID]
+      return (type === "source" && currentSources.includes(id)) || type === "entire"
     },
   })
 
@@ -64,6 +71,7 @@ export function Header() {
       <span className="justify-self-end flex gap-2 items-center text-xl text-primary-600 dark:text-primary">
         <GoTop />
         <Refresh />
+        <Github />
         <Menu />
       </span>
     </>

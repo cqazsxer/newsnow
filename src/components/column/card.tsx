@@ -1,39 +1,42 @@
 import type { NewsItem, SourceID, SourceResponse } from "@shared/types"
 import { useQuery } from "@tanstack/react-query"
-import { AnimatePresence, motion } from "framer-motion"
-import type { SyntheticListenerMap } from "@dnd-kit/core/dist/hooks/utilities"
+import { AnimatePresence, motion, useInView } from "framer-motion"
 import { useWindowSize } from "react-use"
 import { forwardRef, useImperativeHandle } from "react"
 import { OverlayScrollbar } from "../common/overlay-scrollbar"
 import { safeParseString } from "~/utils"
-import { cache } from "~/utils/cache"
 
 export interface ItemsProps extends React.HTMLAttributes<HTMLDivElement> {
   id: SourceID
   /**
    * 是否显示透明度，拖动时原卡片的样式
    */
-  isDragged?: boolean
-  handleListeners?: SyntheticListenerMap
+  isDragging?: boolean
+  setHandleRef?: (ref: HTMLElement | null) => void
 }
 
 interface NewsCardProps {
   id: SourceID
-  handleListeners?: SyntheticListenerMap
+  setHandleRef?: (ref: HTMLElement | null) => void
 }
 
-export const CardWrapper = forwardRef<HTMLDivElement, ItemsProps>(({ id, isDragged, handleListeners, style, ...props }, dndRef) => {
+export const CardWrapper = forwardRef<HTMLElement, ItemsProps>(({ id, isDragging, setHandleRef, style, ...props }, dndRef) => {
   const ref = useRef<HTMLDivElement>(null)
 
-  useImperativeHandle(dndRef, () => ref.current!)
+  const inView = useInView(ref, {
+    once: true,
+  })
+
+  useImperativeHandle(dndRef, () => ref.current! as HTMLDivElement)
 
   return (
     <div
       ref={ref}
       className={$(
         "flex flex-col h-500px rounded-2xl p-4 cursor-default",
-        "backdrop-blur-5 transition-opacity-300",
-        isDragged && "op-50",
+        // "backdrop-blur-5",
+        "transition-opacity-300",
+        isDragging && "op-50",
         `bg-${sources[id].color}-500 dark:bg-${sources[id].color} bg-op-40!`,
       )}
       style={{
@@ -42,54 +45,62 @@ export const CardWrapper = forwardRef<HTMLDivElement, ItemsProps>(({ id, isDragg
       }}
       {...props}
     >
-      <NewsCard id={id} handleListeners={handleListeners} />
+      {inView && <NewsCard id={id} setHandleRef={setHandleRef} />}
     </div>
   )
 })
 
-function NewsCard({ id, handleListeners }: NewsCardProps) {
-  const { refresh, getRefreshId } = useRefetch()
-  const { data, isFetching, isPlaceholderData, isError } = useQuery({
-    queryKey: [id, getRefreshId(id)],
+function NewsCard({ id, setHandleRef }: NewsCardProps) {
+  const { refresh } = useRefetch()
+  const { data, isFetching, isError } = useQuery({
+    queryKey: ["source", id],
     queryFn: async ({ queryKey }) => {
-      const [_id, _refetchTime] = queryKey as [SourceID, number]
-      let url = `/s?id=${_id}`
+      const id = queryKey[1] as SourceID
+      let url = `/s?id=${id}`
       const headers: Record<string, any> = {}
-      if (Date.now() - _refetchTime < 1000) {
-        url = `/s?id=${_id}&latest`
+      if (refetchSources.has(id)) {
+        url = `/s?id=${id}&latest`
         const jwt = safeParseString(localStorage.getItem("jwt"))
         if (jwt) headers.Authorization = `Bearer ${jwt}`
-      } else if (cache.has(_id)) {
-        return cache.get(_id)
+        refetchSources.delete(id)
+      } else if (cacheSources.has(id)) {
+        // wait animation
+        await delay(200)
+        return cacheSources.get(id)
       }
 
       const response: SourceResponse = await myFetch(url, {
         headers,
       })
 
-      try {
-        if (response.items && sources[_id].type === "hottest" && cache.has(_id)) {
-          response.items.forEach((item, i) => {
-            const o = cache.get(_id)!.items.findIndex(k => k.id === item.id)
-            item.extra = {
-              ...item?.extra,
-              diff: o === -1 ? undefined : o - i,
-            }
-          })
+      function diff() {
+        try {
+          if (response.items && sources[id].type === "hottest" && cacheSources.has(id)) {
+            response.items.forEach((item, i) => {
+              const o = cacheSources.get(id)!.items.findIndex(k => k.id === item.id)
+              item.extra = {
+                ...item?.extra,
+                diff: o === -1 ? undefined : o - i,
+              }
+            })
+          }
+        } catch (e) {
+          console.error(e)
         }
-      } catch (e) {
-        console.log(e)
       }
 
-      cache.set(_id, response)
+      diff()
+
+      cacheSources.set(id, response)
       return response
     },
     placeholderData: prev => prev,
-    staleTime: 1000 * 60 * 1,
+    staleTime: Infinity,
+    refetchOnMount: false,
+    refetchOnReconnect: false,
+    refetchOnWindowFocus: false,
     retry: false,
   })
-
-  const isFreshFetching = useMemo(() => isFetching && !isPlaceholderData, [isFetching, isPlaceholderData])
 
   const { isFocused, toggleFocus } = useFocusWith(id)
 
@@ -98,7 +109,7 @@ function NewsCard({ id, handleListeners }: NewsCardProps) {
       <div className={$("flex justify-between mx-2 mt-0 mb-2 items-center")}>
         <div className="flex gap-2 items-center">
           <a
-            className={$("w-8 h-8 rounded-full bg-cover hover:animate-spin")}
+            className={$("w-8 h-8 rounded-full bg-cover")}
             target="_blank"
             href={sources[id].home}
             title={sources[id].desc}
@@ -130,10 +141,10 @@ function NewsCard({ id, handleListeners }: NewsCardProps) {
             className={$("btn", isFocused ? "i-ph:star-fill" : "i-ph:star-duotone")}
             onClick={toggleFocus}
           />
-          {handleListeners && (
-            <button
-              {...handleListeners}
-              type="button"
+          {/* firefox cannot drag a button */}
+          {setHandleRef && (
+            <div
+              ref={setHandleRef}
               className={$("btn", "i-ph:dots-six-vertical-duotone", "cursor-grab")}
             />
           )}
@@ -143,15 +154,15 @@ function NewsCard({ id, handleListeners }: NewsCardProps) {
       <OverlayScrollbar
         className={$([
           "h-full p-2 overflow-y-auto rounded-2xl bg-base bg-op-70!",
-          isFreshFetching && `animate-pulse`,
+          isFetching && `animate-pulse`,
           `sprinkle-${sources[id].color}`,
         ])}
         options={{
           overflow: { x: "hidden" },
         }}
-        defer={false}
+        defer
       >
-        <div className={$("transition-opacity-500", isFreshFetching && "op-20")}>
+        <div className={$("transition-opacity-500", isFetching && "op-20")}>
           {!!data?.items?.length && (sources[id].type === "hottest" ? <NewsListHot items={data.items} /> : <NewsListTimeLine items={data.items} />)}
         </div>
       </OverlayScrollbar>
@@ -204,6 +215,7 @@ function ExtraInfo({ item }: { item: NewsItem }) {
           transform: `scale(${scale ?? 1})`,
         }}
         className="h-4 inline mt--1"
+        referrerPolicy="no-referrer"
         onError={e => e.currentTarget.style.display = "none"}
       />
     )
@@ -217,7 +229,7 @@ function NewsUpdatedTime({ date }: { date: string | number }) {
 function NewsListHot({ items }: { items: NewsItem[] }) {
   const { width } = useWindowSize()
   return (
-    <>
+    <ol className="flex flex-col gap-2">
       {items?.map((item, i) => (
         <a
           href={width < 768 ? item.mobileUrl || item.url : item.url}
@@ -225,7 +237,7 @@ function NewsListHot({ items }: { items: NewsItem[] }) {
           key={item.id}
           title={item.extra?.hover}
           className={$(
-            "flex gap-2 items-center mb-2 items-stretch relative",
+            "flex gap-2 items-center items-stretch relative cursor-pointer [&_*]:cursor-pointer transition-all",
             "hover:bg-neutral-400/10 rounded-md pr-1 visited:(text-neutral-400)",
           )}
         >
@@ -243,7 +255,7 @@ function NewsListHot({ items }: { items: NewsItem[] }) {
           </span>
         </a>
       ))}
-    </>
+    </ol>
   )
 }
 
@@ -252,7 +264,7 @@ function NewsListTimeLine({ items }: { items: NewsItem[] }) {
   return (
     <ol className="border-s border-neutral-400/50 flex flex-col ml-1">
       {items?.map(item => (
-        <li key={item.id} className="flex flex-col">
+        <li key={`${item.id}-${item.pubDate || item?.extra?.date || ""}`} className="flex flex-col">
           <span className="flex items-center gap-1 text-neutral-400/50 ml--1px">
             <span className="">-</span>
             <span className="text-xs text-neutral-400/80">
@@ -263,10 +275,14 @@ function NewsListTimeLine({ items }: { items: NewsItem[] }) {
             </span>
           </span>
           <a
-            className={$("ml-2 px-1 hover:bg-neutral-400/10 rounded-md visited:(text-neutral-400/80)")}
+            className={$(
+              "ml-2 px-1 hover:bg-neutral-400/10 rounded-md visited:(text-neutral-400/80)",
+              "cursor-pointer [&_*]:cursor-pointer transition-all",
+            )}
             href={width < 768 ? item.mobileUrl || item.url : item.url}
             title={item.extra?.hover}
             target="_blank"
+            rel="noopener noreferrer"
           >
             {item.title}
           </a>
